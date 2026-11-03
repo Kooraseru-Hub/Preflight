@@ -1,0 +1,31 @@
+{
+  "steps": [
+    {
+      "id": "build",
+      "command": [
+        "node",
+        "--version"
+      ],
+      "needs": [],
+      "inputs": [
+        "package.json"
+      ],
+      "outputs": []
+    },
+    {
+      "id": "test",
+      "command": [
+        "node",
+        "--test",
+        "tests/core.test.js"
+      ],
+      "needs": [
+        "build"
+      ],
+      "inputs": [
+        "tests/core.test.js"
+      ],
+      "outputs": []
+    }
+  ]
+}

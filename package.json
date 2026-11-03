@@ -1,0 +1,81 @@
+{
+  "name": "preflight",
+  "displayName": "Preflight",
+  "description": "A standalone execution-readiness analyzer with isolated CI rehearsals and live VS Code diagnostics.",
+  "version": "0.1.0",
+  "publisher": "kooraseru-hub",
+  "license": "ISC",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kooraseru-Hub/Preflight.git"
+  },
+  "main": "./vscode/extension.js",
+  "bin": {
+    "preflight": "./bin/preflight.js"
+  },
+  "engines": {
+    "node": ">=20",
+    "vscode": "^1.90.0"
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:preflight.analyze",
+    "onCommand:preflight.rehearse"
+  ],
+  "categories": [
+    "Other",
+    "Testing"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "package:vsix": "vsce package --no-dependencies --out dist/preflight.vsix"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "preflight.analyze",
+        "title": "Preflight: Analyze Workspace"
+      },
+      {
+        "command": "preflight.rehearse",
+        "title": "Preflight: Rehearse in Docker"
+      },
+      {
+        "command": "preflight.showDiagnostics",
+        "title": "Preflight: Show Diagnostics"
+      }
+    ],
+    "configuration": {
+      "title": "Preflight",
+      "properties": {
+        "preflight.planFile": {
+          "type": "string",
+          "default": "preflight.json",
+          "description": "Workspace-relative execution plan to analyze."
+        },
+        "preflight.dockerImage": {
+          "type": "string",
+          "default": "",
+          "description": "Locally available Docker image for isolated rehearsal (no implicit pulls)."
+        }
+      }
+    }
+  },
+  "files": [
+    "src",
+    "bin",
+    "vscode",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "devDependencies": {
+    "@vscode/vsce": "^3.7.1"
+  },
+  "exports": {
+    ".": "./src/core.js",
+    "./server": "./src/server.js",
+    "./rehearsal": "./src/rehearsal.js"
+  }
+}
