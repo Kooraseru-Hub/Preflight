@@ -29,7 +29,7 @@
   ],
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "package:vsix": "vsce package --no-dependencies --out dist/preflight.vsix"
+    "package:vsix": "node -e \"require('node:fs').mkdirSync('dist', { recursive: true })\" && vsce package --no-dependencies --out dist/preflight.vsix"
   },
   "contributes": {
     "commands": [
