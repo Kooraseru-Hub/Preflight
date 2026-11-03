@@ -62,14 +62,6 @@
       }
     }
   },
-  "files": [
-    "src",
-    "bin",
-    "vscode",
-    "README.md",
-    "LICENSE",
-    "docs"
-  ],
   "devDependencies": {
     "@vscode/vsce": "^3.7.1"
   },
