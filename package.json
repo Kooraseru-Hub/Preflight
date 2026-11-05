@@ -64,6 +64,16 @@
           "type": "string",
           "default": "",
           "description": "Locally available Docker image for isolated rehearsal (no implicit pulls)."
+        },
+        "preflight.workspaceDiagnosticsScript": {
+          "type": "string",
+          "default": ".vscode/preflight/workspace-checks.js",
+          "description": "Optional workspace-local diagnostics script. It runs silently in the extension host and must only report diagnostics."
+        },
+        "preflight.workspaceDiagnosticsBash": {
+          "type": "string",
+          "default": "bash",
+          "description": "Bash executable passed to the optional workspace diagnostics script."
         }
       }
     }

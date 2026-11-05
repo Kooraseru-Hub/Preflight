@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
-const { createPlugin, PROVIDER_ID } = require("../vscode/plugin");
+const { createPlugin, PROVIDER_ID, WORKSPACE_CHECKS_PROVIDER_ID } = require("../vscode/plugin");
 
 function makePlugin(t, planFileContents) {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "preflight-plugin-"));
@@ -20,7 +20,7 @@ function makePlugin(t, planFileContents) {
 	};
 	const commands = new Map();
 	const messages = [];
-	let provider;
+	const providers = new Map();
 	let refreshOptions;
 	const vscode = {
 		workspace: {
@@ -43,13 +43,13 @@ function makePlugin(t, planFileContents) {
 		getWorkspaceFolders: () => [folder],
 		onDidChangeWorkspaceFolders: () => ({ dispose() {} }),
 		registerDiagnosticProvider(value) {
-			provider = value;
+			providers.set(value.id, value);
 			return {
 				refresh: async (_folder, options) => {
 					refreshOptions = options;
-					return provider.provideDiagnostics({ workspaceFolder: folder, workspaceRoot: root, documents: [], options });
+					return value.provideDiagnostics({ workspaceFolder: folder, workspaceRoot: root, documents: [], options });
 				},
-				dispose() {},
+				dispose() { providers.delete(value.id); },
 			};
 		},
 	};
@@ -64,7 +64,7 @@ function makePlugin(t, planFileContents) {
 	};
 	const context = { subscriptions: [] };
 	const plugin = createPlugin({ vscode, host, engine, startServer: async () => ({ stop: async () => {} }), context });
-	return { root, planPath, folder, vscode, commands, messages, context, plugin, getProvider: () => provider, getRefreshOptions: () => refreshOptions };
+	return { root, planPath, folder, vscode, commands, messages, context, plugin, getProvider: (id = PROVIDER_ID) => providers.get(id), getRefreshOptions: () => refreshOptions };
 }
 
 test("uses an open dirty plan snapshot instead of stale on-disk JSON", async (t) => {
@@ -105,5 +105,21 @@ test("registers a namespaced host provider and preserves the engine API", async 
 	assert.equal(fixture.getProvider().id, PROVIDER_ID);
 	assert.equal(api.getCapabilities()[0], "analysis");
 	assert.deepEqual(api.getEditorDiagnostics(), []);
+	await fixture.plugin.dispose();
+});
+
+test("runs the optional workspace checker silently and filters dirty-file results", async (t) => {
+	const fixture = makePlugin(t, JSON.stringify({ steps: [] }));
+	const script = path.join(fixture.root, ".vscode", "preflight", "workspace-checks.js");
+	fs.mkdirSync(path.dirname(script), { recursive: true });
+	fs.writeFileSync(script, `console.log(${JSON.stringify(path.join(fixture.root, "saved.js") + ":2:3: warning: saved finding")});\nconsole.log(${JSON.stringify(path.join(fixture.root, "dirty.js") + ":1:1: error: stale disk finding")});`);
+	fixture.plugin.activate();
+	const result = await fixture.getProvider(WORKSPACE_CHECKS_PROVIDER_ID).provideDiagnostics({
+		workspaceFolder: fixture.folder,
+		workspaceRoot: fixture.root,
+		documents: [{ path: "dirty.js", text: "unsaved valid source", isDirty: true }],
+		signal: new AbortController().signal,
+	});
+	assert.deepEqual(result.diagnostics, [{ path: "saved.js", line: 2, column: 3, severity: "warning", source: "Preflight", message: "saved finding" }]);
 	await fixture.plugin.dispose();
 });

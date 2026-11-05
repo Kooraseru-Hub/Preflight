@@ -2,8 +2,10 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { spawn } = require("node:child_process");
 
 const PROVIDER_ID = "preflight.execution-plan";
+const WORKSPACE_CHECKS_PROVIDER_ID = "preflight.workspace-checks";
 
 function sameRoot(left, right) {
 	const a = path.resolve(left);
@@ -47,6 +49,53 @@ function readPlan(vscode, folder, documents = []) {
 	if (openDocument) return { plan: JSON.parse(openDocument.text), manifestPath: relative };
 	if (!fs.existsSync(file)) return undefined;
 	return { plan: JSON.parse(fs.readFileSync(file, "utf8")), manifestPath: relative };
+}
+
+function dirtyDocumentPaths(documents = []) {
+	return new Set(documents.filter((document) => document.isDirty).map((document) => document.path));
+}
+
+function parseTaskDiagnostics(output, root, documents = []) {
+	const dirty = dirtyDocumentPaths(documents);
+	const diagnostics = [];
+	for (const line of output.split(/\r?\n/)) {
+		const match = line.match(/^(.*):(\d+):(\d+): (error|warning|information|hint): (.*)$/i);
+		if (!match || match[1] === "WORKSPACE_DIAGNOSTICS_BEGIN" || match[1] === "WORKSPACE_DIAGNOSTICS_END") continue;
+		const absolute = path.resolve(match[1]);
+		const relative = path.relative(root, absolute).split(path.sep).join("/");
+		if (relative === ".." || relative.startsWith("../") || path.isAbsolute(relative) || dirty.has(relative)) continue;
+		diagnostics.push({
+			path: relative,
+			line: Number(match[2]),
+			column: Number(match[3]),
+			severity: match[4].toLowerCase(),
+			source: "Preflight",
+			message: match[5],
+		});
+	}
+	return diagnostics;
+}
+
+function runWorkspaceChecks({ root, script, bash, documents = [], signal }) {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) return resolve([]);
+		const child = spawn(process.execPath, [script, bash, "--once"], { cwd: root, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+		let stdout = "";
+		let stderr = "";
+		child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+		child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+		const abort = () => child.kill();
+		signal?.addEventListener("abort", abort, { once: true });
+		child.once("error", (error) => reject(error));
+		child.once("close", (code) => {
+			signal?.removeEventListener("abort", abort);
+			if (signal?.aborted) return resolve([]);
+			if (code !== 0) {
+				return reject(new Error(stderr.trim() || `Workspace checker exited with status ${code}.`));
+			}
+			resolve(parseTaskDiagnostics(stdout, root, documents));
+		});
+	});
 }
 
 function createPlugin({ vscode, host, engine, startServer, context = { subscriptions: [] } }) {
@@ -121,6 +170,28 @@ function createPlugin({ vscode, host, engine, startServer, context = { subscript
 		};
 	}
 
+	function workspaceChecksProvider() {
+		return {
+			id: WORKSPACE_CHECKS_PROVIDER_ID,
+			async provideDiagnostics(input) {
+				const configuration = vscode.workspace.getConfiguration("preflight", input.workspaceFolder.uri);
+			const scriptName = configuration.get("workspaceDiagnosticsScript", ".vscode/preflight/workspace-checks.js");
+				const script = path.resolve(input.workspaceRoot, scriptName);
+				const relative = path.relative(input.workspaceRoot, script);
+				if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
+					return { diagnostics: [{ path: ".vscode/settings.json", line: 1, column: 1, severity: "error", source: "Preflight", code: "checker-path", message: "preflight.workspaceDiagnosticsScript must stay inside the workspace." }] };
+				}
+				if (!fs.existsSync(script)) return { diagnostics: [] };
+				try {
+					const bash = configuration.get("workspaceDiagnosticsBash", "bash");
+					return { diagnostics: await runWorkspaceChecks({ root: input.workspaceRoot, script, bash, documents: input.documents, signal: input.signal }) };
+				} catch (error) {
+					return { diagnostics: [{ path: relative.split(path.sep).join("/"), line: 1, column: 1, severity: "error", source: "Preflight", code: "workspace-check-failed", message: error?.message || String(error) }] };
+				}
+			},
+		};
+	}
+
 	async function runCommand(mode) {
 		const folder = vscode.window.activeTextEditor
 			? vscode.workspace.getWorkspaceFolder(vscode.window.activeTextEditor.document.uri)
@@ -132,6 +203,7 @@ function createPlugin({ vscode, host, engine, startServer, context = { subscript
 
 	function activate() {
 		providerRegistration = addDisposable(host.registerDiagnosticProvider(planProvider()));
+		addDisposable(host.registerDiagnosticProvider(workspaceChecksProvider()));
 		for (const folder of host.getWorkspaceFolders()) void attach(folder);
 		workspaceSubscription = addDisposable(host.onDidChangeWorkspaceFolders((event) => {
 			for (const folder of event.removed) void detach(folder);
@@ -164,4 +236,4 @@ function createPlugin({ vscode, host, engine, startServer, context = { subscript
 	return { activate, dispose };
 }
 
-module.exports = { createPlugin, editorDiagnostics, readPlan, PROVIDER_ID };
+module.exports = { createPlugin, editorDiagnostics, readPlan, parseTaskDiagnostics, runWorkspaceChecks, PROVIDER_ID, WORKSPACE_CHECKS_PROVIDER_ID };

@@ -7,11 +7,11 @@ const { activateWith, deactivate, HOST_EXTENSION_ID } = require("../vscode/exten
 
 test("activates as a plugin through the declared generic host dependency", async () => {
 	const commands = new Map();
-	const provider = { dispose() {}, refresh: async () => ({ status: "passed", diagnostics: [] }) };
+	const providers = [];
 	const host = {
 		apiVersion: 1,
 		getWorkspaceFolders: () => [],
-		registerDiagnosticProvider: (value) => { assert.equal(value.id, "preflight.execution-plan"); return provider; },
+		registerDiagnosticProvider: (value) => { providers.push(value.id); return { dispose() {}, refresh: async () => ({ status: "passed", diagnostics: [] }) }; },
 		onDidChangeWorkspaceFolders: () => ({ dispose() {} }),
 	};
 	const vscode = {
@@ -34,6 +34,7 @@ test("activates as a plugin through the declared generic host dependency", async
 	});
 	assert.equal(api.getCapabilities()[0], "analysis");
 	assert.ok(commands.has("preflight.analyze"));
+	assert.deepEqual(providers, ["preflight.execution-plan", "preflight.workspace-checks"]);
 	assert.ok(packageManifest.extensionDependencies.includes(HOST_EXTENSION_ID));
 	await deactivate();
 });
