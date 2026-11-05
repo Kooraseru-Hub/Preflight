@@ -58,7 +58,7 @@ Each diagnostic contains `path`, `line`, `column`, `severity`, `code`, `source`,
 
 Requests require `Authorization: Bearer <token>`. POST bodies contain `plan`, optional `manifestPath`, `changedFiles`, `image`, and `timeoutMs`. The server pins its authorized workspace; clients cannot select arbitrary roots.
 
-The VS Code extension exposes the same public methods to other extensions via its `activate()` return value. It additionally exposes `getEditorDiagnostics()`, which returns all diagnostics registered by VS Code in the current workspace, not only Preflight's findings.
+The Preflight VS Code plugin exposes the same public methods to other extensions via its `activate()` return value. It additionally exposes `getEditorDiagnostics()`, which returns all diagnostics registered by VS Code in the current workspace, not only Preflight's findings. The plugin depends on Kooraseru Extension Host for scheduling and publishing its diagnostics; the standalone engine and CLI do not depend on that host.
 
 ## Events
 
