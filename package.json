@@ -11,6 +11,9 @@
     "url": "https://github.com/Kooraseru-Hub/Preflight.git"
   },
   "main": "./vscode/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
   "bin": {
     "preflight": "./bin/preflight.js"
   },
@@ -22,6 +25,9 @@
     "onStartupFinished",
     "onCommand:preflight.analyze",
     "onCommand:preflight.rehearse"
+  ],
+  "extensionDependencies": [
+    "kooraseru-hub.vscode-extension-host"
   ],
   "categories": [
     "Other",
