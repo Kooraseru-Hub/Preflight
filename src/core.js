@@ -62,8 +62,11 @@ function validatePlan(plan, workspace, manifestPath = "preflight.json") {
 		if (!Array.isArray(step.needs || []) || !(step.needs || []).every((item) => typeof item === "string")) {
 			diagnostics.push(diagnostic("invalid-needs", step.id + " needs must be an array of step ids.", manifestPath));
 		}
-		if (step.command !== undefined && (!Array.isArray(step.command) || step.command.length === 0 || !step.command.every((part) => typeof part === "string"))) {
-			diagnostics.push(diagnostic("invalid-command", step.id + " command must be a nonempty array of strings.", manifestPath));
+		for (const key of ["command", "verify"]) {
+			const argv = step[key];
+			if (argv !== undefined && (!Array.isArray(argv) || argv.length === 0 || !argv.every(part => typeof part === "string") || !argv[0])) {
+				diagnostics.push(diagnostic("invalid-" + key, step.id + " " + key + " must be a nonempty argv array.", manifestPath));
+			}
 		}
 		if (step.cwd !== undefined && !containedPath(workspace, step.cwd)) {
 			diagnostics.push(diagnostic("invalid-cwd", step.id + " has a workspace-escaping cwd.", manifestPath));
@@ -218,10 +221,23 @@ class Preflight {
 		const context = { workspace, entry: request.entry, signal: request.signal };
 		const plan = request.provider ? await request.provider.resolve(context) : request.plan;
 		const checked = validatePlan(plan, workspace, request.manifestPath);
+		if (request.target !== undefined) {
+			run.target = request.target;
+			const byId = new Map(checked.order.map(step => [step.id, step]));
+			if (!byId.has(request.target)) {
+				checked.diagnostics.push(diagnostic("unknown-target", "Unknown workflow task: " + request.target, request.manifestPath));
+			} else if (!checked.diagnostics.some(item => item.severity === "error")) {
+				const selected = new Set([request.target]);
+				for (const step of [...checked.order].reverse()) {
+					if (selected.has(step.id)) for (const dependency of step.needs || []) selected.add(dependency);
+				}
+				checked.order = checked.order.filter(step => selected.has(step.id));
+			}
+		}
 		run.entry = plan?.entry ?? request.entry;
 		run.environment = request.environment?.id ?? (request.image ? "docker" : undefined);
-		run.requirements = checked.order.map(({ id, requirements, inputs, effects }) => ({
-			id, requirements: requirements ?? {}, inputs: inputs ?? [], effects: effects ?? [],
+		run.requirements = checked.order.map(({ id, needs, requirements, inputs, outputs, effects }) => ({
+			id, needs: needs ?? [], requirements: requirements ?? {}, inputs: inputs ?? [], outputs: outputs ?? [], effects: effects ?? [],
 		}));
 		if (request.signal?.aborted) return this._finish(run, true);
 		this._add(run, checked.diagnostics);

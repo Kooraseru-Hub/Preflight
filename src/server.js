@@ -29,7 +29,7 @@ function respond(response, status, data) {
 	response.end(JSON.stringify(data));
 }
 
-async function startServer({ preflight, workspace, editorDiagnostics, publishEndpoint = true }) {
+async function startServer({ preflight, workspace, editorDiagnostics, provider, loadPlan, publishEndpoint = true }) {
 	const root = path.resolve(workspace);
 	const token = crypto.randomBytes(32).toString("hex");
 	const file = endpointPath(root);
@@ -40,7 +40,7 @@ async function startServer({ preflight, workspace, editorDiagnostics, publishEnd
 		try {
 			const pathname = new URL(request.url, "http://localhost").pathname;
 			if (request.method === "GET" && pathname === "/capabilities") {
-				const capabilities = preflight.getCapabilities();
+				const capabilities = [...preflight.getCapabilities(), "plan-endpoint"];
 				if (editorDiagnostics) capabilities.push("editor-diagnostics");
 				return respond(response, 200, { capabilities });
 			}
@@ -48,17 +48,25 @@ async function startServer({ preflight, workspace, editorDiagnostics, publishEnd
 				if (!editorDiagnostics) return respond(response, 404, { error: "Editor diagnostics unavailable without VS Code." });
 				return respond(response, 200, { diagnostics: await editorDiagnostics(root) });
 			}
-			if (request.method === "POST" && (pathname === "/analyze" || pathname === "/rehearse")) {
+			if (request.method === "POST" && (["/plan", "/analyze", "/rehearse"].includes(pathname))) {
 				const input = await readJson(request);
-				if (input.workspace && path.resolve(input.workspace) !== root) return respond(response, 403, { error: "Workspace is not authorized." });
+				if (!input || typeof input !== "object" || Array.isArray(input)) return respond(response, 400, { error: "Expected a JSON object." });
+				if (input.entry !== undefined && typeof input.entry !== "string") return respond(response, 400, { error: "Entry must be a string." });
+				if (input.workspace !== undefined && (typeof input.workspace !== "string" || path.resolve(input.workspace) !== root)) return respond(response, 403, { error: "Workspace is not authorized." });
+				if (input.target !== undefined && typeof input.target !== "string") return respond(response, 400, { error: "Target must be a string." });
+				const defaults = pathname === "/plan" && input.plan === undefined && !provider ? await loadPlan?.() : undefined;
 				const payload = {
 					workspace: root,
-					plan: input.plan,
-					manifestPath: input.manifestPath || "preflight.json",
+					plan: input.plan ?? defaults?.plan,
+					provider: input.plan === undefined ? provider : undefined,
+					entry: input.entry,
+					target: input.target,
+					manifestPath: input.manifestPath || defaults?.manifestPath || "preflight.json",
 					changedFiles: input.changedFiles,
 					image: input.image,
 					timeoutMs: input.timeoutMs,
 				};
+				if (pathname === "/plan") return respond(response, 200, await preflight.analyze(payload));
 				const run = pathname === "/analyze" ? preflight.startAnalyze(payload) : preflight.startRehearsal(payload);
 				return respond(response, 202, run);
 			}

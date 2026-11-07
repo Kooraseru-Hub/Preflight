@@ -48,6 +48,22 @@ function runProcess(executable, args, timeoutMs, abortSignal) {
 	});
 }
 
+async function stageGitHistory(workspace, staging, temporary, timeoutMs, signal) {
+	const snapshot = path.join(temporary, "history");
+	const commands = [
+		["clone", "--no-local", "--no-checkout", "--template=", "--", workspace, snapshot],
+		["-C", snapshot, "remote", "remove", "origin"],
+		["-C", snapshot, "reset", "--mixed", "HEAD"],
+	];
+	for (const args of commands) {
+		const result = await runProcess("git", args, timeoutMs, signal);
+		if (result.code !== 0 || result.error || result.timedOut) {
+			throw new Error("Could not stage Git history: " + (result.error || result.stderr.trim() || "Git did not complete."));
+		}
+	}
+	await fs.rename(path.join(snapshot, ".git"), path.join(staging, ".git"));
+}
+
 async function executeRehearsal(options) {
 	const { workspace, steps, image, signal, profile, onStep = () => {} } = options;
 	const timeoutMs = Number.isInteger(options.timeoutMs) && options.timeoutMs > 0
@@ -81,6 +97,7 @@ async function executeRehearsal(options) {
 				return source !== options.envFile && !relative.split(path.sep).some((part) => EXCLUDED.has(part) || part.startsWith(".env."));
 			},
 		});
+		if (profile?.gitHistory === true) await stageGitHistory(workspace, staging, temporary, timeoutMs, signal);
 		for (const step of steps) {
 			if (signal?.aborted) {
 				incomplete = true;
@@ -104,33 +121,43 @@ async function executeRehearsal(options) {
 				incomplete = true;
 			} else {
 				const workingDirectory = path.posix.join("/workspace", (step.cwd || ".").replace(/\\/g, "/"));
-				const container = "preflight-" + randomUUID();
-				const args = [
-					"run", "--rm", "--name", container, "--pull", "never", "--network", "none",
-					"--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-					"--pids-limit", "256", "--memory", "2g", "--cpus", "2",
-					"--read-only", "--tmpfs", "/tmp:rw,nosuid,size=64m",
-					"--mount", "type=bind,source=" + staging + ",target=/workspace",
-					"--workdir", workingDirectory, image, ...command,
-				];
-				const execution = await runProcess("docker", args, timeoutMs, signal);
-				if (execution.timedOut || signal?.aborted) {
-					await runProcess("docker", ["rm", "-f", container], 10000);
-				}
+				const runCommand = async (argv) => {
+					const container = "preflight-" + randomUUID();
+					const args = [
+						"run", "--rm", "--name", container, "--pull", "never", "--network", "none",
+						"--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+						"--pids-limit", "256", "--memory", "2g", "--cpus", "2",
+						"--read-only", "--tmpfs", "/tmp:rw,nosuid,size=64m",
+						"--mount", "type=bind,source=" + staging + ",target=/workspace",
+						"--workdir", workingDirectory, image, ...argv,
+					];
+					const execution = await runProcess("docker", args, timeoutMs, signal);
+					if (execution.timedOut || signal?.aborted) {
+						await runProcess("docker", ["rm", "-f", container], 10000);
+					}
+					return execution;
+				};
+				const execution = await runCommand(command);
+				const succeeded = (result) => result.code === 0 && !result.timedOut && !result.error;
+				const verification = succeeded(execution) && step.verify && !signal?.aborted
+					? await runCommand(step.verify)
+					: undefined;
 				if (signal?.aborted) {
 					incomplete = true;
 					break;
 				}
-				const passed = execution.code === 0 && !execution.timedOut && !execution.error;
+				const passed = succeeded(execution) && (!verification || succeeded(verification));
 				result = {
 					id: step.id, status: passed ? "passed" : "failed",
 					exitCode: execution.code, durationMs: Date.now() - start,
 					stdout: execution.stdout, stderr: execution.stderr,
+					...(verification ? { verificationExitCode: verification.code, verificationStdout: verification.stdout, verificationStderr: verification.stderr } : {}),
 					...(substituted ? { coverage: "substitute", service: substitute.service } : {}),
 				};
 				if (!passed) {
-					const reason = execution.timedOut ? "timed out" : execution.error || "exited with " + execution.code;
-					diagnostics.push(finding("step-failed", "Rehearsal step " + step.id + " " + reason + ".", "error"));
+					const failure = verification || execution;
+					const reason = failure.timedOut ? "timed out" : failure.error || "exited with " + failure.code;
+					diagnostics.push(finding("step-failed", "Rehearsal step " + step.id + (verification ? " verification " : " ") + reason + ".", "error"));
 				}
 			}
 			outcomes.set(step.id, result.status);

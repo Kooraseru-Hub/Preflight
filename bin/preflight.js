@@ -98,7 +98,10 @@ async function main() {
 	const workspace = path.resolve(options.workspace || process.cwd());
 	if (command === "help" || options.help) return output(usage(), false);
 	if (command === "serve") {
-		const api = await startServer({ preflight: new Preflight(), workspace });
+		const provider = options.provider
+			? (await import(pathToFileURL(path.resolve(workspace, options.provider)).href)).default
+			: undefined;
+		const api = await startServer({ preflight: new Preflight(), workspace, provider, loadPlan: () => loadPlan(workspace, options.plan) });
 		output("Preflight listening on loopback. Endpoint: " + api.endpointFile, false);
 		const stop = async () => { await api.stop(); process.exit(0); };
 		process.once("SIGINT", stop);
@@ -119,6 +122,7 @@ async function main() {
 		request.env = parseEnv(fs.readFileSync(request.envFile, "utf8"));
 	}
 	request.entry = options.entry;
+	request.target = options.target;
 	const preflight = new Preflight();
 	const controller = new AbortController();
 	const cancel = () => controller.abort();

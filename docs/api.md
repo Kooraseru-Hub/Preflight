@@ -73,3 +73,11 @@ Pass `environment: { id, execute(context) }` to rehearse in a project-defined en
 An offline Docker profile may declare `substitutes` keyed by task ID. Each substitute supplies a service name and a command argv. Outcomes identify substituted service coverage. Real test targets belong in an explicit profile handled by a project runner.
 
 The package contract is unversioned. Preserve documented fields and meanings. Consumers should ignore fields they do not recognize.
+
+`POST /plan` waits for analysis to finish and returns the complete run, including the resolved entry and tasks in dependency order. Each task lists its dependency IDs, input and output declarations, effects, and requirements. The run status distinguishes a passed, failed, or incomplete plan. Supply an inline plan or configure the server with `preflight serve --provider ./provider.cjs` and send an entry. With neither, the CLI server reads its configured plan file.
+
+A declarative task can supply a `verify` argv array. The Docker runner invokes it in the staged workspace after the task command succeeds. A failed assertion fails the task and blocks dependents. The outcome includes the verification exit code and output when the assertion ran.
+
+Use `--target TASK_ID` with the CLI or `target` in a plan API request to select a task and all of its transitive dependencies. The result records the selected target. Omitting the target selects the entire graph.
+
+Set `gitHistory: true` in a Docker profile to stage a fresh Git snapshot alongside the copied working tree. It includes HEAD and tags and preserves current working file edits. The source Git configuration, hooks, index, and remotes are excluded. Enable this only when tasks need repository history, which may contain files absent from the working tree.

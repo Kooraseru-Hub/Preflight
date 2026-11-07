@@ -134,3 +134,40 @@ test("dynamic plans and custom environments preserve outcome coverage", async ()
 	assert.equal(run.steps[0].stdout, "[redacted]");
 	assert.equal(run.steps[0].extension, "retained");
 });
+
+test("plan endpoint returns a completed graph for the requested entry", async (t) => {
+	const server = await startServer({
+		preflight: new Preflight(),
+		workspace,
+		publishEndpoint: false,
+		provider: {
+			resolve: ({ entry }) => ({ entry, steps: [
+				{ id: "publish", needs: [entry] },
+				{ id: entry, outputs: ["build/artifact"] },
+				{ id: "unrelated" },
+			] }),
+		},
+	});
+	t.after(() => server.stop());
+	const url = "http://127.0.0.1:" + server.endpoint.port + "/plan";
+	const request = (body, token = server.endpoint.token) => fetch(url, {
+		method: "POST",
+		headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+	assert.equal((await request({}, "invalid")).status, 401);
+	assert.equal((await request({ workspace: workspace + "-other" })).status, 403);
+	assert.equal((await request({ entry: [] })).status, 400);
+	const response = await request({ entry: "build", target: "publish" });
+	assert.equal(response.status, 200);
+	const run = await response.json();
+	assert.equal(run.status, "passed");
+	assert.equal(run.entry, "build");
+	assert.equal(run.target, "publish");
+	assert.deepEqual(run.requirements.map(({ id, needs, outputs }) => ({ id, needs, outputs })), [
+		{ id: "build", needs: [], outputs: ["build/artifact"] },
+		{ id: "publish", needs: ["build"], outputs: [] },
+	]);
+	const invalid = await request({ plan: { steps: [{ id: "build", needs: ["missing"] }] } });
+	assert.equal((await invalid.json()).status, "failed");
+});
