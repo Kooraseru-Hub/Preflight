@@ -3,6 +3,7 @@
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
+const { randomUUID } = require("node:crypto");
 const { spawn } = require("node:child_process");
 
 const OUTPUT_LIMIT = 64 * 1024;
@@ -12,7 +13,7 @@ function finding(code, message, severity = "warning") {
 	return { path: "preflight.json", line: 1, column: 1, severity, code, source: "Preflight/Rehearsal", message };
 }
 
-function runProcess(executable, args, timeoutMs) {
+function runProcess(executable, args, timeoutMs, abortSignal) {
 	return new Promise((resolve) => {
 		let stdout = "";
 		let stderr = "";
@@ -23,9 +24,11 @@ function runProcess(executable, args, timeoutMs) {
 			if (finished) return;
 			finished = true;
 			clearTimeout(timer);
+			abortSignal?.removeEventListener("abort", cancel);
 			resolve({ stdout, stderr, timedOut, ...result });
 		};
 		let child;
+		const cancel = () => child?.kill("SIGKILL");
 		try {
 			child = spawn(executable, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
 		} catch (error) {
@@ -36,6 +39,8 @@ function runProcess(executable, args, timeoutMs) {
 		child.stderr.on("data", (chunk) => { stderr = (stderr + chunk.toString("utf8")).slice(0, OUTPUT_LIMIT); });
 		child.on("error", (error) => finish({ code: null, error: error.message }));
 		child.on("close", (code, signal) => finish({ code, signal }));
+		abortSignal?.addEventListener("abort", cancel, { once: true });
+		if (abortSignal?.aborted) cancel();
 		timer = setTimeout(() => {
 			timedOut = true;
 			child.kill("SIGKILL");
@@ -44,7 +49,7 @@ function runProcess(executable, args, timeoutMs) {
 }
 
 async function executeRehearsal(options) {
-	const { workspace, steps, image, onStep = () => {} } = options;
+	const { workspace, steps, image, signal, profile, onStep = () => {} } = options;
 	const timeoutMs = Number.isInteger(options.timeoutMs) && options.timeoutMs > 0
 		? Math.min(options.timeoutMs, 600000) : 120000;
 	if (typeof image !== "string" || !image.trim()) {
@@ -73,39 +78,55 @@ async function executeRehearsal(options) {
 			filter: (source) => {
 				const relative = path.relative(workspace, source);
 				if (!relative || relative === ".") return true;
-				return !relative.split(path.sep).some((part) => EXCLUDED.has(part));
+				return source !== options.envFile && !relative.split(path.sep).some((part) => EXCLUDED.has(part) || part.startsWith(".env."));
 			},
 		});
 		for (const step of steps) {
+			if (signal?.aborted) {
+				incomplete = true;
+				break;
+			}
 			const start = Date.now();
+			const substitute = Object.hasOwn(profile?.substitutes ?? {}, step.id) ? profile.substitutes[step.id] : undefined;
+			const substituted = typeof substitute?.service === "string" && Array.isArray(substitute.command) && substitute.command.length > 0 && substitute.command.every(part => typeof part === "string");
+			const command = substituted ? substitute.command : step.command;
 			const dependencies = Array.isArray(step.needs) ? step.needs : [];
 			const effects = Array.isArray(step.effects) ? step.effects : [];
 			let result;
 			if (dependencies.some((id) => outcomes.get(id) !== "passed")) {
 				result = { id: step.id, status: "skipped", reason: "A dependency did not pass.", durationMs: 0 };
 				incomplete = true;
-			} else if (effects.some((effect) => effect !== "read" && effect !== "local")) {
+			} else if (!substituted && effects.some((effect) => effect !== "read" && effect !== "local")) {
 				result = { id: step.id, status: "skipped", reason: "External or publication effects are not rehearsed.", durationMs: 0 };
 				incomplete = true;
-			} else if (!Array.isArray(step.command) || step.command.length === 0) {
+			} else if (!Array.isArray(command) || command.length === 0) {
 				result = { id: step.id, status: "skipped", reason: "No executable command was supplied.", durationMs: 0 };
 				incomplete = true;
 			} else {
 				const workingDirectory = path.posix.join("/workspace", (step.cwd || ".").replace(/\\/g, "/"));
+				const container = "preflight-" + randomUUID();
 				const args = [
-					"run", "--rm", "--pull", "never", "--network", "none",
+					"run", "--rm", "--name", container, "--pull", "never", "--network", "none",
 					"--cap-drop", "ALL", "--security-opt", "no-new-privileges",
 					"--pids-limit", "256", "--memory", "2g", "--cpus", "2",
 					"--read-only", "--tmpfs", "/tmp:rw,nosuid,size=64m",
 					"--mount", "type=bind,source=" + staging + ",target=/workspace",
-					"--workdir", workingDirectory, image, ...step.command,
+					"--workdir", workingDirectory, image, ...command,
 				];
-				const execution = await runProcess("docker", args, timeoutMs);
+				const execution = await runProcess("docker", args, timeoutMs, signal);
+				if (execution.timedOut || signal?.aborted) {
+					await runProcess("docker", ["rm", "-f", container], 10000);
+				}
+				if (signal?.aborted) {
+					incomplete = true;
+					break;
+				}
 				const passed = execution.code === 0 && !execution.timedOut && !execution.error;
 				result = {
 					id: step.id, status: passed ? "passed" : "failed",
 					exitCode: execution.code, durationMs: Date.now() - start,
 					stdout: execution.stdout, stderr: execution.stderr,
+					...(substituted ? { coverage: "substitute", service: substitute.service } : {}),
 				};
 				if (!passed) {
 					const reason = execution.timedOut ? "timed out" : execution.error || "exited with " + execution.code;

@@ -3,6 +3,8 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
+const { parseEnv } = require("node:util");
 const { Preflight } = require("../src/core");
 const { startServer, endpointPath } = require("../src/server");
 
@@ -107,12 +109,44 @@ async function main() {
 		const diagnostics = await remoteDiagnostics(workspace, options);
 		return output(options.json ? diagnostics : formatDiagnostics(diagnostics), !!options.json);
 	}
-	if (command !== "analyze" && command !== "rehearse") throw new Error("Unknown command: " + command);
+	if (!["plan", "analyze", "rehearse", "workspace"].includes(command)) throw new Error("Unknown command: " + command);
 	const request = { workspace, ...loadPlan(workspace, options.plan) };
+	if (options.provider) request.provider = (await import(pathToFileURL(path.resolve(workspace, options.provider)).href)).default;
+	if (options.environment) request.environment = (await import(pathToFileURL(path.resolve(workspace, options.environment)).href)).default;
+	if (options.profile) request.profile = JSON.parse(fs.readFileSync(path.resolve(workspace, options.profile), "utf8"));
+	if (options["env-file"]) {
+		request.envFile = fs.realpathSync(path.resolve(workspace, options["env-file"]));
+		request.env = parseEnv(fs.readFileSync(request.envFile, "utf8"));
+	}
+	request.entry = options.entry;
 	const preflight = new Preflight();
-	const result = command === "analyze"
-		? await preflight.analyze(request)
-		: await preflight.rehearse({ ...request, image: options.image, timeoutMs: Number(options.timeout) || undefined });
+	const controller = new AbortController();
+	const cancel = () => controller.abort();
+	process.once("SIGINT", cancel);
+	process.once("SIGTERM", cancel);
+	request.signal = controller.signal;
+	let result;
+	try {
+		result = command !== "rehearse"
+			? await preflight.analyze(request)
+			: await preflight.rehearse({ ...request, image: options.image, timeoutMs: Number(options.timeout) || undefined });
+	} finally {
+		process.removeListener("SIGINT", cancel);
+		process.removeListener("SIGTERM", cancel);
+	}
+	if (command === "workspace") {
+		const { connect } = require(path.resolve(workspace, options["bridge-client"]));
+		const client = await connect({ workspace, sessionFile: process.env.WORKBENCH_BRIDGE_SESSION });
+		try {
+			const modulePath = path.relative(workspace, path.resolve(__dirname, "../workspace/bridge.cjs"));
+			const target = await client.loadModule({ path: modulePath });
+			await client.call({ target, path: ["publish"], args: [result] });
+			if (process.env.WORKBENCH_BRIDGE_ONCE !== "1") await client.closed;
+		} finally {
+			client.close();
+		}
+		return;
+	}
 	if (options.json) output(result, true);
 	else {
 		output("Preflight " + result.status + " (" + result.diagnostics.length + " diagnostics)", false);

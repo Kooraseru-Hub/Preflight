@@ -76,7 +76,7 @@ test("providers can be registered and disposed", async () => {
 test("rehearsal delegates to its isolated executor and streams step results", async () => {
 	const preflight = new Preflight({
 		executor: async ({ steps, onStep }) => {
-			onStep({ id: steps[0].id, status: "passed", durationMs: 1 });
+			for (const step of steps) onStep({ id: step.id, status: "passed", durationMs: 1 });
 			return { diagnostics: [], incomplete: false };
 		},
 	});
@@ -118,4 +118,19 @@ test("loopback API requires its token and exports diagnostics", async (t) => {
 	assert.match(run.id, /^[a-f0-9-]+$/);
 	const completed = await preflight.analyze({ workspace, plan: validPlan });
 	assert.equal(completed.status, "passed");
+});
+
+test("dynamic plans and custom environments preserve outcome coverage", async () => {
+	const preflight = new Preflight();
+	const provider = { resolve: async ({ entry }) => ({ steps: [{ id: entry }, { id: "publish", needs: [entry] }] }) };
+	const environment = { execute: async ({ onStep, env }) => {
+		onStep({ id: "build", status: "passed", stdout: env.TOKEN, extension: "retained" });
+		return {};
+	} };
+	const request = { workspace, provider, entry: "build", environment, env: { TOKEN: "secret-value" } };
+	assert.equal((await preflight.analyze(request)).status, "passed");
+	const run = await preflight.rehearse(request);
+	assert.equal(run.status, "incomplete");
+	assert.equal(run.steps[0].stdout, "[redacted]");
+	assert.equal(run.steps[0].extension, "retained");
 });

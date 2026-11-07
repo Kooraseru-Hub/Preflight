@@ -1,7 +1,0 @@
-.github/**
-tests/**
-dist/**
-node_modules/**
-*.vsix
-.gitignore
-.preflight/**

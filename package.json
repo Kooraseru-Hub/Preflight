@@ -1,89 +1,33 @@
 {
   "name": "preflight",
-  "displayName": "Preflight",
-  "description": "A standalone execution-readiness analyzer with isolated CI rehearsals and live VS Code diagnostics.",
-  "version": "0.1.0",
-  "publisher": "kooraseru-hub",
+  "description": "Workflow plan analysis and isolated rehearsal with Workbench Bridge integration.",
+  "version": "0.1.1",
   "license": "ISC",
   "private": false,
   "repository": {
     "type": "git",
     "url": "https://github.com/Kooraseru-Hub/Preflight.git"
   },
-  "main": "./vscode/extension.js",
-  "extensionKind": [
-    "workspace"
-  ],
+  "main": "./src/core.js",
   "bin": {
     "preflight": "./bin/preflight.js"
   },
   "engines": {
-    "node": ">=20",
-    "vscode": "^1.90.0"
+    "node": ">=22"
   },
-  "activationEvents": [
-    "onStartupFinished",
-    "onCommand:preflight.analyze",
-    "onCommand:preflight.rehearse"
-  ],
-  "extensionDependencies": [
-    "kooraseru-hub.vscode-extension-host"
-  ],
-  "categories": [
-    "Other",
-    "Testing"
-  ],
   "scripts": {
-    "test": "node --test tests/*.test.js",
-    "package:vsix": "node -e \"require('node:fs').mkdirSync('dist', { recursive: true })\" && vsce package --no-dependencies --out dist/preflight.vsix"
-  },
-  "contributes": {
-    "commands": [
-      {
-        "command": "preflight.analyze",
-        "title": "Preflight: Analyze Workspace"
-      },
-      {
-        "command": "preflight.rehearse",
-        "title": "Preflight: Rehearse in Docker"
-      },
-      {
-        "command": "preflight.showDiagnostics",
-        "title": "Preflight: Show Diagnostics"
-      }
-    ],
-    "configuration": {
-      "title": "Preflight",
-      "properties": {
-        "preflight.planFile": {
-          "type": "string",
-          "default": "preflight.json",
-          "description": "Workspace-relative execution plan to analyze."
-        },
-        "preflight.dockerImage": {
-          "type": "string",
-          "default": "",
-          "description": "Locally available Docker image for isolated rehearsal (no implicit pulls)."
-        },
-        "preflight.workspaceDiagnosticsScript": {
-          "type": "string",
-          "default": ".vscode/preflight/workspace-checks.js",
-          "description": "Optional workspace-local diagnostics script. It runs silently in the extension host and must only report diagnostics."
-        },
-        "preflight.workspaceDiagnosticsBash": {
-          "type": "string",
-          "default": "bash",
-          "description": "Bash executable passed to the optional workspace diagnostics script."
-        }
-      }
-    }
-  },
-  "devDependencies": {
-    "@vscode/vsce": "^3.7.1"
+    "test": "node --test tests/*.test.js"
   },
   "exports": {
     ".": "./src/core.js",
     "./server": "./src/server.js",
     "./rehearsal": "./src/rehearsal.js"
-  }
+  },
+  "files": [
+    "bin",
+    "src",
+    "workspace",
+    "docs",
+    "examples"
+  ]
 }

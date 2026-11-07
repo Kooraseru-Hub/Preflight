@@ -1,6 +1,6 @@
 # Public API
 
-Preflight has a single canonical API. There are no API generations, compatibility layers, or version identifiers in requests, responses, or routes. Consumers are responsible for adapting to the current contract.
+Preflight has a single canonical API. There are no API generations, compatibility layers, or version identifiers in requests, responses, or routes. Additive changes preserve existing fields and meanings.
 
 ## JavaScript
 
@@ -17,7 +17,7 @@ Import `{ Preflight }` from `src/core.js` (or the installed package). Methods:
 | `registerProvider({ id, analyze(context) })` | Register a trusted in-process validator; returns `{ dispose() }` |
 | `getCapabilities()` | Discover supported capabilities without checking a version number |
 
-`Preflight` does not generate CI plans from arbitrary project formats. A caller or provider must supply the plan. A missing plan produces `incomplete`, never `passed`.
+`Preflight` does not generate CI plans from arbitrary project formats. Supply a declarative plan or a project provider. A missing plan produces `incomplete`, never `passed`.
 
 ## Plan
 
@@ -25,14 +25,14 @@ A plan is a JSON object containing `steps`. A step has a unique `id`, optional `
 
 Preflight checks duplicate IDs, unknown dependencies, dependency cycles, invalid commands, workspace-escaping paths, and duplicate output ownership. Additional checks can be registered as providers. Language analysis is the responsibility of providers, not the Preflight core.
 
-Rehearsal permits effects `read` and `local`. A step declaring other effects is skipped and the run becomes `incomplete`. Network access is disabled inside Docker, and a temporary workspace copy is mounted instead of the real source tree.
+Rehearsal permits effects `read` and `local`. A step declaring other effects requires an explicit substitute in Docker. Otherwise the task is skipped and the run becomes `incomplete`. Network access is disabled inside Docker, and a temporary workspace copy is mounted instead of the real source tree.
 
 ## Run statuses
 
 | Status | Meaning |
 | --- | --- |
 | `running` | Work has started |
-| `passed` | Every configured, attempted check passed |
+| `passed` | Analysis passed or every required rehearsal task passed |
 | `failed` | A diagnostic with severity `error` was produced |
 | `incomplete` | A required plan, runtime, or rehearsal capability was unavailable or skipped |
 
@@ -54,7 +54,7 @@ Each diagnostic contains `path`, `line`, `column`, `severity`, `code`, `source`,
 | `GET` | `/runs/{id}` | Read the run snapshot |
 | `GET` | `/runs/{id}/diagnostics` | Read all Preflight diagnostics for a run |
 | `GET` | `/runs/{id}/events` | Subscribe to Server-Sent Events |
-| `GET` | `/editor/diagnostics` | Read VS Code's current Problems diagnostics, only when provided by the VSIX |
+| `GET` | `/editor/diagnostics` | Read VS Code's current Problems diagnostics, when an editor diagnostics source is configured |
 
 Requests require `Authorization: Bearer <token>`. POST bodies contain `plan`, optional `manifestPath`, `changedFiles`, `image`, and `timeoutMs`. The server pins its authorized workspace; clients cannot select arbitrary roots.
 
@@ -63,3 +63,13 @@ The Preflight VS Code plugin exposes the same public methods to other extensions
 ## Events
 
 `started`, `diagnostics`, `step`, and `completed` are emitted with `runId`, `type`, and `at`. An HTTP events subscription begins with a `snapshot` event containing the current run.
+
+## Workspace workflow providers
+
+Pass `provider: { resolve({ workspace, entry, signal }) }` to analysis or rehearsal. The provider returns the same plan shape as a declarative manifest. Steps can include a `requirements` object, surfaced in the analysis result.
+
+Pass `environment: { id, execute(context) }` to rehearse in a project-defined environment. The context contains ordered `steps`, `workspace`, `entry`, `profile`, explicit `env`, `signal`, and `onStep(outcome)`. Report one outcome per required task using its `id` and a status of `passed`, `failed`, or `skipped`. Return optional diagnostics and an incomplete flag. The runner owns execution isolation, target validation, and output assertions. Runner modules and providers are trusted workspace code.
+
+An offline Docker profile may declare `substitutes` keyed by task ID. Each substitute supplies a service name and a command argv. Outcomes identify substituted service coverage. Real test targets belong in an explicit profile handled by a project runner.
+
+The package contract is unversioned. Preserve documented fields and meanings. Consumers should ignore fields they do not recognize.

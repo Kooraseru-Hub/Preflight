@@ -199,7 +199,7 @@ class Preflight {
 		this.runs.set(run.id, run);
 		this._emit(run, "started");
 		const pending = Promise.resolve().then(() => this._execute(run, request || {})).catch((error) => {
-			this._add(run, [diagnostic("internal-error", error.message || String(error))]);
+			this._add(run, [diagnostic("internal-error", request?.env ? "Workflow execution raised an error." : error.message || String(error))]);
 			run.status = "failed";
 			run.completedAt = new Date().toISOString();
 			this._emit(run, "completed", { status: run.status });
@@ -215,15 +215,23 @@ class Preflight {
 			this._add(run, [diagnostic("workspace-missing", "Workspace directory does not exist: " + workspace)]);
 			return this._finish(run, false);
 		}
-		const checked = validatePlan(request.plan, workspace, request.manifestPath);
+		const context = { workspace, entry: request.entry, signal: request.signal };
+		const plan = request.provider ? await request.provider.resolve(context) : request.plan;
+		const checked = validatePlan(plan, workspace, request.manifestPath);
+		run.entry = plan?.entry ?? request.entry;
+		run.environment = request.environment?.id ?? (request.image ? "docker" : undefined);
+		run.requirements = checked.order.map(({ id, requirements, inputs, effects }) => ({
+			id, requirements: requirements ?? {}, inputs: inputs ?? [], effects: effects ?? [],
+		}));
+		if (request.signal?.aborted) return this._finish(run, true);
 		this._add(run, checked.diagnostics);
 		let incomplete = checked.incomplete;
 		const invalid = checked.diagnostics.some((item) => item.severity === "error");
 
-		if (!invalid && request.plan) {
+		if (!invalid && plan) {
 			for (const provider of this.providers.values()) {
 				try {
-					const result = await provider.analyze({ workspace, plan: request.plan, changedFiles: request.changedFiles || [] });
+					const result = await provider.analyze({ workspace, plan, changedFiles: request.changedFiles || [] });
 					if (Array.isArray(result?.diagnostics)) {
 						this._add(run, result.diagnostics.map((item) => ({ ...item, source: item.source || provider.id })));
 					}
@@ -233,21 +241,40 @@ class Preflight {
 				}
 			}
 			if (run.mode === "rehearse" && !run.diagnostics.some((item) => item.severity === "error")) {
-				const result = await this.executor({
+				const execute = request.environment?.execute || this.executor;
+				const redact = (value) => {
+					if (typeof value === "string") {
+						const secrets = Object.values(request.env || {}).filter(Boolean).sort((a, b) => b.length - a.length);
+						for (const secret of secrets) value = value.split(secret).join("[redacted]");
+					}
+					return value;
+				};
+				const result = await execute.call(request.environment, {
+					...context,
+					env: request.env || {},
+					provider: request.provider,
+					profile: request.profile,
+					envFile: request.envFile,
 					workspace,
 					steps: checked.order,
 					image: request.image,
 					timeoutMs: request.timeoutMs,
 					onStep: (step) => {
+						step = Object.fromEntries(Object.entries(step).map(([key, value]) => [key, key === "id" || key === "status" ? value : redact(value)]));
 						run.steps.push(step);
 						this._emit(run, "step", { step: structuredClone(step) });
 					},
 				});
-				if (Array.isArray(result.diagnostics)) this._add(run, result.diagnostics);
+				if (Array.isArray(result.diagnostics)) this._add(run, result.diagnostics.map(item => ({ ...item, message: redact(item.message) })));
+				const outcomes = new Map(run.steps.map(step => [step.id, step.status]));
+				if (checked.order.some(step => outcomes.get(step.id) === "failed")) {
+					this._add(run, [diagnostic("execution-failed", "One or more required tasks failed.")]);
+				}
+				if (checked.order.some(step => outcomes.get(step.id) !== "passed")) incomplete = true;
 				if (result.incomplete) incomplete = true;
 			}
 		}
-		this._finish(run, incomplete);
+		this._finish(run, incomplete || !!request.signal?.aborted);
 	}
 
 	_finish(run, incomplete) {
